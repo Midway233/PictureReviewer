@@ -4,6 +4,7 @@ from PIL import Image, ImageTk, ExifTags
 import os
 import glob
 import datetime
+import rawpy
 
 class PictureReviewer:
     def __init__(self, root):
@@ -17,6 +18,7 @@ class PictureReviewer:
         self.image_list = []
         self.current_index = 0
         self.save_list = []
+        self.out_list = []
         self.current_image_path = ""
         
         # 设置主题样式
@@ -46,13 +48,19 @@ class PictureReviewer:
         list_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="列表", menu=list_menu)
         list_menu.add_command(label="查看保存列表", command=lambda: self.show_list_dialog("save"))
+        list_menu.add_command(label="查看剩余列表", command=lambda: self.show_list_dialog("remain"))
+        list_menu.add_separator()
         list_menu.add_command(label="载入保存列表", command=self.load_save_list)
+        list_menu.add_command(label="载入out_list.txt", command=self.load_out_list)
+        list_menu.add_separator()
+        list_menu.add_command(label="查看out_list.txt", command=lambda: self.show_list_dialog("out"))
         list_menu.add_command(label="移动保存列表图片", command=self.move_saved_images)
         
         # 导出菜单
         export_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="导出", menu=export_menu)
         export_menu.add_command(label="导出保存列表", command=self.export_save_list)
+        export_menu.add_command(label="导出剩余列表", command=self.export_remain_list)
         
         # 主内容区域
         self.main_frame = tk.Frame(self.root)
@@ -96,6 +104,10 @@ class PictureReviewer:
                                      style='Save.TButton', command=self.save_image)
         self.save_button.pack(fill=tk.X, pady=5)
         
+        self.delete_button = ttk.Button(self.cat_frame, text="删除 (D)", 
+                                      style='Delete.TButton', command=self.delete_image)
+        self.delete_button.pack(fill=tk.X, pady=5)
+        
         self.next_button_key = ttk.Button(self.cat_frame, text="下一张 (N)", 
                                        style='Delete.TButton', command=self.next_image)
         self.next_button_key.pack(fill=tk.X, pady=5)
@@ -107,6 +119,10 @@ class PictureReviewer:
         self.view_save_button = tk.Button(self.list_frame, text="查看保存列表", 
                                         bg="#4CAF50", fg="white", command=lambda: self.show_list_dialog("save"))
         self.view_save_button.pack(fill=tk.X, pady=5)
+        
+        self.view_remain_button = tk.Button(self.list_frame, text="查看剩余列表", 
+                                          bg="#FF9800", fg="white", command=lambda: self.show_list_dialog("remain"))
+        self.view_remain_button.pack(fill=tk.X, pady=5)
         
         # 导出按钮
         self.export_frame = tk.Frame(self.action_frame, bg="#f0f0f0")
@@ -157,6 +173,8 @@ class PictureReviewer:
         self.root.bind('<Y>', lambda event: self.save_image())
         self.root.bind('<n>', lambda event: self.next_image())
         self.root.bind('<N>', lambda event: self.next_image())
+        self.root.bind('<Delete>', lambda event: self.delete_image())
+        self.root.bind('<BackSpace>', lambda event: self.delete_image())
         
         # 绑定窗口大小变化事件
         self.image_frame.bind('<Configure>', lambda event: self.resize_and_display_image())
@@ -165,18 +183,28 @@ class PictureReviewer:
         # 选择文件夹
         self.image_folder = filedialog.askdirectory()
         if self.image_folder:
-            # 获取所有JPEG图片 - 使用集合去重
+            # 获取所有支持的图片 - 使用集合去重
             image_files = set()
             # 遍历所有支持的扩展名（包括大小写）
-            for ext in ['*.jpg', '*.jpeg', '*.JPG', '*.JPEG']:
+            for ext in ['*.jpg', '*.jpeg', '*.JPG', '*.JPEG', '*.nef', '*.NEF']:
                 files = glob.glob(os.path.join(self.image_folder, ext))
                 image_files.update(files)
             # 转换回列表并排序
             self.image_list = sorted(list(image_files))
             
             if not self.image_list:
-                messagebox.showinfo("提示", "该文件夹中没有JPEG图片")
+                messagebox.showinfo("提示", "该文件夹中没有支持的图片格式")
                 return
+            
+            # 生成remain_list.txt文件，包含所有图片名称
+            remain_list_path = os.path.join(self.image_folder, "remain_list.txt")
+            try:
+                with open(remain_list_path, "w", encoding="utf-8") as f:
+                    for img_path in self.image_list:
+                        f.write(os.path.basename(img_path) + "\n")
+                print(f"已生成remain_list.txt文件，包含{len(self.image_list)}张图片")
+            except Exception as e:
+                print(f"生成remain_list.txt失败：{e}")
             
             # 初始化列表
             self.current_index = 0
@@ -217,6 +245,9 @@ class PictureReviewer:
             if image_name not in self.save_list:
                 self.save_list.append(image_name)
             
+            # 从remain_list.txt中移除已保存的图片
+            self.remove_from_remain_list(image_name)
+            
             # 显示下一张图片
             if self.current_index < len(self.image_list) - 1:
                 self.current_index += 1
@@ -231,6 +262,86 @@ class PictureReviewer:
                     self.update_info_display()
                     self.update_status()
                     self.exif_text.config(text="")
+    
+    def delete_image(self):
+        """删除当前图片，从remain_list.txt中移除"""
+        if self.current_image_path:
+            image_name = os.path.basename(self.current_image_path)
+            # 从remain_list.txt中移除图片
+            self.remove_from_remain_list(image_name)
+            
+            # 显示下一张图片
+            if self.current_index < len(self.image_list) - 1:
+                self.current_index += 1
+                self.show_current_image()
+            else:
+                # 所有图片已显示完毕
+                if messagebox.askyesno("提示", "所有图片已遍历完成，是否重新开始？"):
+                    self.current_index = 0
+                    self.show_current_image()
+                else:
+                    self.image_label.config(image="")
+                    self.update_info_display()
+                    self.update_status()
+                    self.exif_text.config(text="")
+    
+    def remove_from_remain_list(self, image_name):
+        """从remain_list.txt中移除指定图片名称"""
+        if not self.image_folder:
+            return
+        
+        remain_list_path = os.path.join(self.image_folder, "remain_list.txt")
+        if not os.path.exists(remain_list_path):
+            return
+        
+        try:
+            # 读取remain_list.txt文件
+            with open(remain_list_path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+            
+            # 移除指定的图片名称
+            updated_lines = [line.strip() for line in lines if line.strip() != image_name]
+            
+            # 写回文件
+            with open(remain_list_path, "w", encoding="utf-8") as f:
+                for line in updated_lines:
+                    f.write(line + "\n")
+                    
+            print(f"已从remain_list.txt中移除：{image_name}")
+        except Exception as e:
+            print(f"更新remain_list.txt失败：{e}")
+            
+    def process_rawpy_exif(self, exif_data, raw):
+        """处理rawpy提取的EXIF信息"""
+        exif_info = {}
+        
+        try:
+            # 尼康Z63相机的基本信息
+            if 'ImageWidth' in exif_data:
+                exif_info['ImageWidth'] = exif_data['ImageWidth']
+            if 'ImageHeight' in exif_data:
+                exif_info['ImageHeight'] = exif_data['ImageHeight']
+            
+            # rawpy提供了一些基本元数据
+            if hasattr(raw, 'sizes'):
+                exif_info['宽度'] = raw.sizes.width
+                exif_info['高度'] = raw.sizes.height
+            
+            # 尝试从相机厂商信息推断
+            # NEF文件通常来自尼康相机
+            exif_info['相机品牌'] = 'Nikon'
+            exif_info['相机型号'] = 'Z63 (推测)'
+            
+            # 由于rawpy的限制，我们无法直接获取详细的拍摄参数
+            # 但可以显示一些基本信息
+            exif_info['格式'] = 'NEF (RAW)'
+            exif_info['文件类型'] = 'Nikon Electronic Format'
+            
+        except Exception as e:
+            print(f"处理rawpy EXIF数据时出错：{e}")
+            exif_info = {"错误": "无法处理NEF文件元数据"}
+        
+        return exif_info
             
     def prev_image(self):
         if self.current_index > 0:
@@ -271,6 +382,42 @@ class PictureReviewer:
                     f.write(image_name + "\n")
             messagebox.showinfo("提示", f"保存列表已导出到：{file_path}")
     
+    def export_remain_list(self):
+        """导出剩余列表"""
+        if not self.image_folder:
+            messagebox.showinfo("提示", "请先选择图片文件夹")
+            return
+        
+        remain_list_path = os.path.join(self.image_folder, "remain_list.txt")
+        if not os.path.exists(remain_list_path):
+            messagebox.showinfo("提示", "remain_list.txt文件不存在")
+            return
+        
+        try:
+            # 读取remain_list.txt文件
+            with open(remain_list_path, "r", encoding="utf-8") as f:
+                remain_list = [line.strip() for line in f.readlines() if line.strip()]
+            
+            if not remain_list:
+                messagebox.showinfo("提示", "剩余列表为空")
+                return
+            
+            # 选择保存位置
+            file_path = filedialog.asksaveasfilename(
+                defaultextension=".txt",
+                filetypes=[("文本文件", "*.txt"), ("所有文件", "*.*")],
+                initialfile="remain_list.txt"
+            )
+            
+            if file_path:
+                # 保存列表
+                with open(file_path, "w", encoding="utf-8") as f:
+                    for image_name in remain_list:
+                        f.write(image_name + "\n")
+                messagebox.showinfo("提示", f"剩余列表已导出到：{file_path}")
+        except Exception as e:
+            messagebox.showerror("错误", f"导出剩余列表失败：{e}")
+    
     def load_save_list(self):
         """载入已存在的待保存图片列表"""
         file_path = filedialog.askopenfilename(
@@ -288,14 +435,96 @@ class PictureReviewer:
             except Exception as e:
                 messagebox.showerror("错误", f"载入保存列表时出错：{e}")
     
+    def load_out_list(self):
+        """载入out_list.txt文件"""
+        file_path = filedialog.askopenfilename(
+            filetypes=[("文本文件", "*.txt"), ("所有文件", "*.*")],
+            title="选择out_list.txt文件"
+        )
+        
+        if file_path:
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    self.out_list = [line.strip() for line in f.readlines() if line.strip()]
+                messagebox.showinfo("提示", f"成功载入 {len(self.out_list)} 张图片到out_list")
+                self.update_status()
+            except Exception as e:
+                messagebox.showerror("错误", f"载入out_list.txt时出错：{e}")
+    
     def move_saved_images(self):
         """将所有保存列表中的图片移动到子文件夹"""
-        if not self.save_list:
-            messagebox.showinfo("提示", "保存列表为空，无法移动图片")
-            return
-        
         if not self.image_folder:
             messagebox.showinfo("提示", "请先选择图片文件夹")
+            return
+        
+        # 创建选择对话框，让用户选择要操作的列表文件
+        choice_dialog = tk.Toplevel(self.root)
+        choice_dialog.title("选择移动列表")
+        choice_dialog.geometry("400x200")
+        choice_dialog.transient(self.root)
+        choice_dialog.grab_set()
+        choice_dialog.configure(bg="#f0f0f0")
+        
+        # 居中显示
+        choice_dialog.geometry("+%d+%d" % (
+            self.root.winfo_rootx() + 50,
+            self.root.winfo_rooty() + 50
+        ))
+        
+        tk.Label(choice_dialog, text="请选择要移动的图片列表：", 
+                font=('Arial', 12, 'bold'), bg="#f0f0f0").pack(pady=20)
+        
+        selected_list = tk.StringVar()
+        selected_list.set("save")  # 默认选择保存列表
+        
+        # 单选框
+        tk.Radiobutton(choice_dialog, text="保存列表 (save_list.txt)", variable=selected_list, value="save",
+                      bg="#f0f0f0", font=('Arial', 10)).pack(pady=10)
+        tk.Radiobutton(choice_dialog, text="剩余列表 (remain_list.txt)", variable=selected_list, value="remain",
+                      bg="#f0f0f0", font=('Arial', 10)).pack(pady=10)
+        tk.Radiobutton(choice_dialog, text="out_list.txt", variable=selected_list, value="out",
+                      bg="#f0f0f0", font=('Arial', 10)).pack(pady=10)
+        
+        def confirm_move():
+            choice = selected_list.get()
+            choice_dialog.destroy()
+            self.perform_move_images(choice)
+        
+        # 按钮框架
+        button_frame = tk.Frame(choice_dialog, bg="#f0f0f0")
+        button_frame.pack(pady=20)
+        
+        tk.Button(button_frame, text="确定", command=confirm_move, 
+                 bg="#4CAF50", fg="white", font=('Arial', 10), 
+                 width=8, height=1).pack(side=tk.LEFT, padx=10)
+        tk.Button(button_frame, text="取消", command=choice_dialog.destroy,
+                 bg="#f44336", fg="white", font=('Arial', 10), 
+                 width=8, height=1).pack(side=tk.LEFT, padx=10)
+    
+    def perform_move_images(self, list_type):
+        """执行图片移动操作"""
+        if list_type == "save":
+            image_list = self.save_list
+            list_name = "保存列表"
+        elif list_type == "out":
+            image_list = self.out_list
+            list_name = "out_list"
+        else:  # remain
+            # 从remain_list.txt文件读取剩余图片列表
+            remain_list_path = os.path.join(self.image_folder, "remain_list.txt")
+            if not os.path.exists(remain_list_path):
+                messagebox.showinfo("提示", "remain_list.txt文件不存在")
+                return
+            
+            try:
+                with open(remain_list_path, "r", encoding="utf-8") as f:
+                    image_list = [line.strip() for line in f.readlines() if line.strip()]
+            except Exception as e:
+                messagebox.showerror("错误", f"读取remain_list.txt失败：{e}")
+                return
+        
+        if not image_list:
+            messagebox.showinfo("提示", f"{list_name}为空，无法移动图片")
             return
         
         # 创建目标文件夹
@@ -311,69 +540,129 @@ class PictureReviewer:
         moved_count = 0
         failed_count = 0
         
-        for image_name in self.save_list:
-            src_path = os.path.join(self.image_folder, image_name)
-            dst_path = os.path.join(saved_folder, image_name)
+        for image_name in image_list:
+            # 获取文件名（不包含扩展名）
+            base_name = os.path.splitext(image_name)[0]
             
-            if os.path.exists(src_path):
+            # 在文件夹中查找匹配的文件（忽略扩展名）
+            found_file = None
+            for ext in ['.jpg', '.jpeg', '.JPG', '.JPEG', '.nef', '.NEF']:
+                potential_file = os.path.join(self.image_folder, base_name + ext)
+                if os.path.exists(potential_file):
+                    found_file = potential_file
+                    break
+            
+            if found_file:
+                # 获取实际的文件名（包含扩展名）
+                actual_filename = os.path.basename(found_file)
+                dst_path = os.path.join(saved_folder, actual_filename)
+                
                 try:
-                    os.rename(src_path, dst_path)
+                    os.rename(found_file, dst_path)
                     moved_count += 1
+                    print(f"移动 {actual_filename} 成功")
                 except Exception as e:
                     failed_count += 1
-                    print(f"移动 {image_name} 失败：{e}")
+                    print(f"移动 {actual_filename} 失败：{e}")
             else:
                 failed_count += 1
+                print(f"未找到匹配文件：{image_name}")
         
-        # 更新保存列表（只保留成功移动的图片）
-        self.save_list = [image_name for image_name in self.save_list 
-                        if not os.path.exists(os.path.join(self.image_folder, image_name))]
+        message = f"移动完成！成功移动 {moved_count} 张图片，失败 {failed_count} 张图片"
         
-        messagebox.showinfo("提示", f"移动完成！成功移动 {moved_count} 张图片，失败 {failed_count} 张图片")
-        self.update_info_display()
+        # 如果是保存列表，更新保存列表
+        if list_type == "save":
+            # 更新保存列表（只保留成功移动的图片）
+            self.save_list = [image_name for image_name in self.save_list 
+                            if not os.path.exists(os.path.join(self.image_folder, image_name))]
+            self.update_info_display()
+        
+        messagebox.showinfo("提示", message)
         self.update_status()
     
     def show_exif_info(self):
         try:
-            image = Image.open(self.current_image_path)
-            exif_data = image._getexif()
-            if exif_data:
-                exif_info = {}
-                for tag, value in exif_data.items():
-                    if tag in ExifTags.TAGS:
-                        tag_name = ExifTags.TAGS[tag]
-                        if tag_name in ['DateTimeOriginal', 'DateTime', 'Make', 'Model', 'FocalLength', 'FocalLengthIn35mmFilm', 'FNumber', 'ExposureTime', 'ISO', 'LensModel']:
-                            if isinstance(value, bytes):
-                                # 尝试多种编码方式解码镜头型号
-                                try:
-                                    value = value.decode('utf-8', errors='replace')
-                                except:
-                                    try:
-                                        value = value.decode('ascii', errors='replace')
-                                    except:
-                                        value = value.hex()  # 如果所有编码都失败，显示十六进制
-                                # 过滤掉不可打印字符
-                                value = ''.join(c for c in value if c.isprintable() or c in '\t\n\r')
-                                # 清除字符串两端的空白字符
-                                value = value.strip()
-                            elif isinstance(value, tuple) and len(value) == 2:
-                                # 处理分数格式的数值（如焦距）
-                                value = f"{value[0]}/{value[1]}" if value[1] != 0 else str(value[0])
-                            elif tag_name == 'ISO':
-                                # 特殊处理ISO值
-                                if isinstance(value, int):
-                                    # 直接使用整数值
-                                    pass
-                                elif isinstance(value, tuple):
-                                    # 有些相机可能返回ISO范围，取第一个值
-                                    value = str(value[0]) if value else 'Unknown'
-                                else:
-                                    # 其他情况尝试转换为字符串
-                                    value = str(value)
-                            exif_info[tag_name] = value
+            # 检查文件扩展名，支持NEF格式
+            file_ext = os.path.splitext(self.current_image_path)[1].lower()
+            
+            if file_ext == '.nef':
+                # 使用rawpy处理NEF文件并提取EXIF信息
+                with rawpy.imread(self.current_image_path) as raw:
+                    # 尝试提取EXIF数据
+                    exif_data = {}
+                    try:
+                        # rawpy提供了基本的EXIF信息
+                        if hasattr(raw, 'sizes'):
+                            # 尺寸信息
+                            exif_data['ImageWidth'] = raw.sizes.width
+                            exif_data['ImageHeight'] = raw.sizes.height
+                        
+                        # 尝试从raw的元数据中获取信息
+                        if hasattr(raw, 'raw_image'):
+                            # 这是一个原始图像数据，但EXIF信息需要特殊处理
+                            pass
+                        
+                        # 由于rawpy的限制，我们主要获取基本信息
+                        # 更多EXIF信息可能需要其他库或方法
+                        exif_info = self.process_rawpy_exif(exif_data, raw)
+                    except:
+                        # 如果rawpy提取失败，使用默认信息
+                        exif_info = {"错误": "无法从NEF文件中提取详细信息"}
+                image = None  # NEF文件不需要PIL图像对象
+            else:
+                # 使用PIL处理常规图片格式
+                image = Image.open(self.current_image_path)
+                exif_data = image._getexif()
                 
-                # 格式化显示EXIF信息 - 垂直排列
-                display_lines = []
+                if exif_data:
+                    exif_info = {}
+                    for tag, value in exif_data.items():
+                        if tag in ExifTags.TAGS:
+                            tag_name = ExifTags.TAGS[tag]
+                            if tag_name in ['DateTimeOriginal', 'DateTime', 'Make', 'Model', 'FocalLength', 'FocalLengthIn35mmFilm', 'FNumber', 'ExposureTime', 'ISO', 'LensModel']:
+                                if isinstance(value, bytes):
+                                    # 尝试多种编码方式解码镜头型号
+                                    try:
+                                        value = value.decode('utf-8', errors='replace')
+                                    except:
+                                        try:
+                                            value = value.decode('ascii', errors='replace')
+                                        except:
+                                            value = value.hex()  # 如果所有编码都失败，显示十六进制
+                                    # 过滤掉不可打印字符
+                                    value = ''.join(c for c in value if c.isprintable() or c in '\t\n\r')
+                                    # 清除字符串两端的空白字符
+                                    value = value.strip()
+                                elif isinstance(value, tuple) and len(value) == 2:
+                                    # 处理分数格式的数值（如焦距）
+                                    value = f"{value[0]}/{value[1]}" if value[1] != 0 else str(value[0])
+                                elif tag_name == 'ISO':
+                                    # 特殊处理ISO值
+                                    if isinstance(value, int):
+                                        # 直接使用整数值
+                                        pass
+                                    elif isinstance(value, tuple):
+                                        # 有些相机可能返回ISO范围，取第一个值
+                                        value = str(value[0]) if value else 'Unknown'
+                                    else:
+                                        # 其他情况尝试转换为字符串
+                                        value = str(value)
+                                exif_info[tag_name] = value
+                else:
+                    exif_info = {}
+            
+            # 格式化显示EXIF信息 - 垂直排列
+            display_lines = []
+            
+            # NEF文件的特殊处理
+            if file_ext == '.nef':
+                for key, value in exif_info.items():
+                    if key == '错误':
+                        display_lines.append(f"错误：{value}")
+                    else:
+                        display_lines.append(f"{key}：{value}")
+            else:
+                # 常规图片的EXIF处理
                 if 'DateTimeOriginal' in exif_info:
                     display_lines.append(f"拍摄时间：{exif_info['DateTimeOriginal']}")
                 if 'Make' in exif_info:
@@ -392,13 +681,11 @@ class PictureReviewer:
                     display_lines.append(f"快门：{exif_info['ExposureTime']}s")
                 if 'ISO' in exif_info:
                     display_lines.append(f"ISO：{exif_info['ISO']}")
-                
-                if display_lines:
-                    self.exif_text.config(text="\n".join(display_lines))
-                else:
-                    self.exif_text.config(text="无关键EXIF信息")
+            
+            if display_lines:
+                self.exif_text.config(text="\n".join(display_lines))
             else:
-                self.exif_text.config(text="无EXIF信息")
+                self.exif_text.config(text="无关键EXIF信息")
         except Exception as e:
             self.exif_text.config(text="无法读取EXIF信息")
     
@@ -407,7 +694,21 @@ class PictureReviewer:
         if not self.current_image_path:
             return
         
-        image = Image.open(self.current_image_path)
+        # 检查文件扩展名，支持NEF格式
+        file_ext = os.path.splitext(self.current_image_path)[1].lower()
+        
+        if file_ext == '.nef':
+            # 使用rawpy处理NEF文件
+            try:
+                with rawpy.imread(self.current_image_path) as raw:
+                    rgb = raw.postprocess()
+                image = Image.fromarray(rgb)
+            except Exception as e:
+                messagebox.showerror("错误", f"无法读取NEF文件：{e}")
+                return
+        else:
+            # 使用PIL处理常规图片格式
+            image = Image.open(self.current_image_path)
         
         # 获取当前图片显示区域的大小
         img_width = self.image_frame.winfo_width() - 20  # 减去边距
@@ -440,15 +741,47 @@ class PictureReviewer:
         self.image_label.image = photo
     
     def show_list_dialog(self, list_type):
-        """显示保存列表的对话框"""
-        title = "保存列表"
-        image_list = self.save_list
-        bg_color = "#4CAF50"
-        text_color = "white"
+        """显示列表对话框（保存列表或剩余列表）"""
+        # 根据列表类型设置不同的参数
+        if list_type == "save":
+            title = "保存列表"
+            image_list = self.save_list
+            bg_color = "#4CAF50"
+            text_color = "white"
+        elif list_type == "out":
+            title = "out_list"
+            image_list = self.out_list
+            bg_color = "#9C27B0"
+            text_color = "white"
+        else:  # remain
+            title = "剩余列表"
+            bg_color = "#FF9800"
+            text_color = "white"
+            
+            # 从remain_list.txt文件读取剩余图片列表
+            if not self.image_folder:
+                messagebox.showinfo("提示", "请先选择图片文件夹")
+                return
+            
+            remain_list_path = os.path.join(self.image_folder, "remain_list.txt")
+            if not os.path.exists(remain_list_path):
+                messagebox.showinfo("提示", "remain_list.txt文件不存在")
+                return
+            
+            try:
+                with open(remain_list_path, "r", encoding="utf-8") as f:
+                    image_list = [line.strip() for line in f.readlines() if line.strip()]
+            except Exception as e:
+                messagebox.showerror("错误", f"读取remain_list.txt失败：{e}")
+                return
+        
+        if not image_list:
+            messagebox.showinfo("提示", f"{title}为空")
+            return
         
         # 创建对话框
         dialog = tk.Toplevel(self.root)
-        dialog.title(title)
+        dialog.title(f"{title} ({len(image_list)}张图片)")
         dialog.geometry("800x600")
         dialog.transient(self.root)
         dialog.grab_set()
